@@ -84,7 +84,6 @@ max_binlog_size   = 100M
 
 # private-isu-2026 PR #9 の競技向け設定。
 # doublewrite と同期 flush を無効化するため、クラッシュ時の耐久性は低下する。
-disable-log-bin
 innodb_doublewrite = 0
 max_connections = 1000
 innodb_buffer_pool_size = 1G
