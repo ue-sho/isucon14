@@ -1,43 +1,43 @@
 # Repository Guidelines
 
-## プロジェクト構成
+## 目的と優先順位
 
-ISUCON14 の配車サービス ISURIDE を改善するリポジトリです。現在のデプロイ対象は TypeScript / Hono による Node.js 実装です。
+このリポジトリは、ISUCON14 の配車サービス ISURIDE の性能を改善し、競技ベンチマークのスコアを高めるためのものです。アプリケーション、SQL、インデックス、MySQL・nginx 設定を横断してボトルネックを解消します。現在のデプロイ対象は TypeScript / Hono による Node.js 実装です。
 
-- `webapp/nodejs/src/`: API ハンドラー、認証ミドルウェア、型定義。利用者・椅子・オーナー別にファイルを分割します。
-- `webapp/nodejs/test/`: Node.js 実装の回帰テスト。
-- `webapp/go/`: Go 版のアプリケーション。
-- `webapp/sql/`: スキーマ、マスターデータ、初期化スクリプト。
-- `webapp/public/`: 配信済みフロントエンド資産と画像。
-- `webapp/payment_mock/`: 決済モック。
-- `common/etc/`: MySQL・nginx 設定。`scripts/` は計測・運用スクリプトです。
-- `docs/`: アプリ仕様と競技マニュアル。API 定義は `webapp/openapi.yaml` を参照します。
+仕様と競技ルールを守り、ベンチマークが成功する状態を維持してください。推測だけで最適化せず、計測結果から改善対象を選びます。仕様は `docs/ISURIDE.md`、競技マニュアルは `docs/manual.md`、API 定義は `webapp/openapi.yaml` を参照します。
 
-## 開発・検証コマンド
+## 改善対象の配置
 
-以下は `webapp/nodejs/` で実行します。
+- `webapp/nodejs/src/`: 利用者・椅子・オーナー向け API、認証、配車処理。
+- `webapp/sql/`: スキーマ、インデックス、初期データ、初期化処理。DB 変更は初期化後も再現する形で反映します。
+- `common/etc/mysql/`、`common/etc/nginx/`: デプロイする MySQL・nginx 設定。
+- `scripts/`: ベンチマーク実行、計測ログのローテーション、解析・Discord 投稿。
+- `webapp/go/`: Go 版実装。`webapp/payment_mock/` は決済モック、`webapp/public/` は配信資産です。
+- `Taskfile.yml`: デプロイ・計測・解析の操作入口。
 
-- `npm ci`: ロックファイルに従って依存関係を導入。
-- `npm run dev`: TypeScript を監視して開発サーバーを起動。
-- `npm start`: `tsc` でビルドし、`dist/main.js` を起動。
-- `npx tsc --noEmit`: strict モードの型検査。
-- `npx tsx --test test/*.test.ts`: 回帰テストを実行。
-- `npx biome check src test`: フォーマット、import 整理、lint を検査。
+## 性能改善の進め方
 
-ルートでは `task --list` で運用タスクを確認します。`task deploy BRANCH=perf/example` は `s1` にブランチを反映し、MySQL・nginx・アプリを再起動します。`task bench` は計測ログを退避してリモートベンチマークを実行します。解析には `task alp` と `task slowquery` を使います。
+1. 現在のコミット、設定、スコア、成功可否を記録して基準値を作ります。
+2. `task alp` で処理時間の大きい API、`task slowquery` で負荷の高い SQL を特定します。呼び出し回数、総処理時間、走査行数を見て優先順位を決めます。
+3. 改善仮説を立て、効果を比較できる単位で変更します。SQL の絞り込み、インデックス、不要な問い合わせ、ロックやトランザクション範囲を確認します。
+4. 変更をコミット・push してデプロイし、同じ条件でベンチマークを実行します。成功可否、スコア、API・SQL の処理時間を比較します。
+5. 改善前後の数値と採用理由を残します。悪化や失敗があれば原因を調べ、必要に応じて変更を戻します。
 
-## コーディング規約
+## デプロイ・計測コマンド
 
-TypeScript はスペース2文字、ダブルクォートを基本とし、`biome.json` に従います。関数・変数は camelCase、型は PascalCase、既存ハンドラーファイルは `chair_handlers.ts` のような snake_case です。ES Modules の相対 import は既存コード同様に `.js` 拡張子を付けます。Go を変更する場合は `gofmt` を適用します。
+ルートで実行します。SSH 接続先はアプリ・DB の `s1` と負荷生成用の `bench` です。
 
-## テスト方針
+- `task --list`: 利用できる操作を確認。
+- `task deploy BRANCH=perf/example`: `s1` で指定ブランチを取得し、依存関係の導入、型検査、設定配置、MySQL・nginx・Node アプリの再起動を実施。省略時はローカルの現在ブランチを使います。サーバーに未コミット変更があると中止します。
+- `task deploy-config`: サーバーの取得済み設定を配置・検査し、MySQL・nginx を再起動。Git の取得は行いません。
+- `task restart` / `task status` / `task logs`: Node アプリの再起動、状態確認、ログ追跡。
+- `task bench`: 計測ログを退避・再オープンし、`bench` から `s1` に負荷をかけます。ログ退避だけなら `task logs:rotate`。
+- `task alp`: nginx のログを総処理時間順に集計。`/assets/` と `/images/` を除外し、対象 API の可変 ID をまとめます。
+- `task slowquery`: MySQL のスロークエリを `pt-query-digest` で解析。
+- `task setup:tools`: `s1` に alp と pt-query-digest を導入。
 
-テストは `node:test` と `node:assert/strict` を使い、`test/*.test.ts` に配置します。テスト名には期待する動作を記述してください。通知や SQL を変更するときは、レスポンス、更新内容、トランザクションの正常終了・失敗を検証します。数値によるカバレッジ基準はありません。性能改善では型検査・関連テストに加え、ベンチマークの成功とスコア・処理時間の変化を確認します。
+## 結果共有と設定管理
 
-## コミット・Pull Request
+`Taskfile.yml` は `.env.discord` を読み込みます。`DISCORD_WEBHOOK_URL` が設定されていると、`task bench` は結果・実行ログに加え、alp とスロークエリの解析結果を Discord に自動投稿します。再投稿は `task metrics:discord`、個別投稿は `task alp:discord` / `task slowquery:discord` を使います。解析対象は現在のログ全体なので、比較中は別の負荷やログ退避を混ぜないでください。
 
-履歴に合わせ、コミット件名は `Optimize chair notifications with indexed ride lookups` のような簡潔な英語の命令形にします。ブランチ名は `perf/chair-notification` など、目的が分かる名前を使います。PR には変更理由、変更後の動作、検証コマンドと結果を記載し、性能変更には計測条件と改善前後の数値を添えます。関連 issue があればリンクし、画面変更にはスクリーンショットを添付します。
-
-## 設定・運用上の注意
-
-DB 接続は `ISUCON_DB_HOST`、`ISUCON_DB_PORT`、`ISUCON_DB_USER`、`ISUCON_DB_PASSWORD`、`ISUCON_DB_NAME` で設定します。秘密情報や `.env.discord` をコミットしないでください。ルートの `.gitignore` は登録対象を限定するため、新規ファイルが無視されていないか `git check-ignore` で確認します。
+変更は `perf/chair-notification` のように目的が分かるブランチにまとめ、コミットや PR に改善仮説、対象 API・SQL、計測条件、変更前後のスコアを記載します。秘密情報や Webhook URL はコミットしません。ルートの `.gitignore` は登録対象を限定しているため、新規ファイルは `git check-ignore` で確認します。
