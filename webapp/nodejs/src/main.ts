@@ -32,7 +32,6 @@ import type { Environment } from "./types/hono.js";
 import { execSync } from "node:child_process";
 import { internalGetMatching } from "./internal_handlers.js";
 import { createPool } from "mysql2/promise";
-import { logger } from "hono/logger";
 
 const pool = createPool({
   host: process.env.ISUCON_DB_HOST || "127.0.0.1",
@@ -44,7 +43,6 @@ const pool = createPool({
 });
 
 const app = new Hono<Environment>();
-app.use(logger());
 app.use(
   createMiddleware<Environment>(async (ctx, next) => {
     const connection = await pool.getConnection();
