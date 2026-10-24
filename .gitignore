@@ -26,9 +26,7 @@ node_modules/
 !/common/
 /common/**
 !/common/**/
+!/common/etc/mysql/my.cnf
 !/common/etc/mysql/mysql.conf.d/mysqld.cnf
 !/common/etc/nginx/nginx.conf
 !/common/etc/nginx/sites-available/isuride.conf
-
-# Makefileはビルドに必要なため、除外しない。
-!/Makefile
