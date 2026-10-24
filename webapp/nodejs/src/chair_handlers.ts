@@ -5,7 +5,6 @@ import { ulid } from "ulid";
 import { getLatestRideStatus } from "./common.js";
 import type { Environment } from "./types/hono.js";
 import type {
-  ChairLocation,
   Coordinate,
   Owner,
   Ride,
@@ -60,6 +59,16 @@ export const chairPostActivity = async (ctx: Context<Environment>) => {
   return ctx.body(null, 204);
 };
 
+type ChairCoordinateState = {
+  recorded_at: Date;
+  ride_id: string | null;
+  pickup_latitude: number | null;
+  pickup_longitude: number | null;
+  destination_latitude: number | null;
+  destination_longitude: number | null;
+  latest_status: string | null;
+};
+
 export const chairPostCoordinate = async (ctx: Context<Environment>) => {
   const reqJson = await ctx.req.json<Coordinate>();
   const chair = ctx.var.chair;
@@ -70,40 +79,58 @@ export const chairPostCoordinate = async (ctx: Context<Environment>) => {
       "INSERT INTO chair_locations (id, chair_id, latitude, longitude) VALUES (?, ?, ?, ?)",
       [chairLocationID, chair.id, reqJson.latitude, reqJson.longitude],
     );
-    const [[location]] = await ctx.var.dbConn.query<
-      Array<ChairLocation & RowDataPacket>
-    >("SELECT * FROM chair_locations WHERE id = ?", [chairLocationID]);
-    const [[ride]] = await ctx.var.dbConn.query<Array<Ride & RowDataPacket>>(
-      "SELECT * FROM rides WHERE chair_id = ? ORDER BY updated_at DESC LIMIT 1",
-      [chair.id],
+    const [[state]] = await ctx.var.dbConn.query<
+      Array<ChairCoordinateState & RowDataPacket>
+    >(
+      `SELECT cl.created_at AS recorded_at,
+              r.id AS ride_id,
+              r.pickup_latitude,
+              r.pickup_longitude,
+              r.destination_latitude,
+              r.destination_longitude,
+              (SELECT rs.status
+               FROM ride_statuses rs
+               WHERE rs.ride_id = r.id
+               ORDER BY rs.created_at DESC
+               LIMIT 1) AS latest_status
+       FROM chair_locations cl
+       LEFT JOIN rides r ON r.id = (
+         SELECT newest.id
+         FROM rides newest
+         WHERE newest.chair_id = cl.chair_id
+         ORDER BY newest.updated_at DESC
+         LIMIT 1
+       )
+       WHERE cl.id = ?`,
+      [chairLocationID],
     );
-    if (ride) {
-      const status = await getLatestRideStatus(ctx.var.dbConn, ride.id);
-      if (status !== "COMPLETED" && status !== "CANCELED") {
-        if (
-          reqJson.latitude === ride.pickup_latitude &&
-          reqJson.longitude === ride.pickup_longitude &&
-          status === "ENROUTE"
-        ) {
-          await ctx.var.dbConn.query(
-            "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)",
-            [ulid(), ride.id, "PICKUP"],
-          );
-        }
-        if (
-          reqJson.latitude === ride.destination_latitude &&
-          reqJson.longitude === ride.destination_longitude &&
-          status === "CARRYING"
-        ) {
-          await ctx.var.dbConn.query(
-            "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)",
-            [ulid(), ride.id, "ARRIVED"],
-          );
-        }
+    if (state.ride_id !== null) {
+      if (state.latest_status === null) {
+        throw new Error("ride status not found");
+      }
+      if (
+        reqJson.latitude === state.pickup_latitude &&
+        reqJson.longitude === state.pickup_longitude &&
+        state.latest_status === "ENROUTE"
+      ) {
+        await ctx.var.dbConn.query(
+          "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)",
+          [ulid(), state.ride_id, "PICKUP"],
+        );
+      }
+      if (
+        reqJson.latitude === state.destination_latitude &&
+        reqJson.longitude === state.destination_longitude &&
+        state.latest_status === "CARRYING"
+      ) {
+        await ctx.var.dbConn.query(
+          "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)",
+          [ulid(), state.ride_id, "ARRIVED"],
+        );
       }
     }
     await ctx.var.dbConn.commit();
-    return ctx.json({ recorded_at: location.created_at.getTime() }, 200);
+    return ctx.json({ recorded_at: state.recorded_at.getTime() }, 200);
   } catch (e) {
     await ctx.var.dbConn.rollback();
     return ctx.text(`${e}`, 500);
