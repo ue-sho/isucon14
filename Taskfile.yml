@@ -48,3 +48,8 @@ tasks:
     desc: bench サーバーから s1 にベンチマークを実行
     cmds:
       - python3 scripts/bench.py
+
+  setup:tools:
+    desc: s1 に alp と pt-query-digest をインストール
+    cmds:
+      - ssh s1 'bash -s' < '{{.TASKFILE_DIR}}/scripts/setup-analysis-tools.sh'
