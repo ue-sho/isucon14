@@ -86,7 +86,7 @@ tasks:
     desc: nginx のリクエストを合計処理時間順で集計
     cmds:
       - >-
-        ssh s1 'sudo alp json --file=/var/log/nginx/access.alp.json
+        ssh s1 'sudo alp ltsv --file=/var/log/nginx/access.ltsv
         --sort=sum --reverse
         -m "/api/app/rides/[^/]+,/api/chair/rides/[^/]+,/api/owner/chairs/[^/]+"'
 
