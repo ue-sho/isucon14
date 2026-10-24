@@ -1,0 +1,21 @@
+# サーバーではホームディレクトリがGitのルートになるため、登録対象を限定する。
+/*
+!/.gitignore
+!/env.sh
+!/webapp/
+
+# Go・Node.jsの実装と共通ファイルを管理する。
+/webapp/*
+!/webapp/go/
+!/webapp/nodejs/
+!/webapp/payment_mock/
+!/webapp/public/
+!/webapp/sql/
+!/webapp/openapi.yaml
+
+# 各言語の.gitignoreに加え、共通のローカルファイルを除外する。
+.DS_Store
+node_modules/
+*.log
+.env
+.env.*
