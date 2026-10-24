@@ -4,7 +4,6 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { ulid } from "ulid";
 import {
   ErroredUpstream,
-  calculateDistance,
   calculateFare,
   getLatestRideStatus,
 } from "./common.js";
@@ -15,7 +14,6 @@ import { requestPaymentGatewayPostPayment } from "./payment_gateway.js";
 import type { Environment } from "./types/hono.js";
 import type {
   Chair,
-  ChairLocation,
   Coordinate,
   Coupon,
   Owner,
@@ -493,69 +491,50 @@ export const appGetNearbyChairs = async (ctx: Context<Environment>) => {
     }
   }
 
-  const coordinate: Coordinate = { latitude: lat, longitude: lon };
-
   await ctx.var.dbConn.beginTransaction();
   try {
-    const [chairs] = await ctx.var.dbConn.query<Array<Chair & RowDataPacket>>(
-      "SELECT * FROM chairs",
+    // 相関先のIDも並び順に含め、既存の複合インデックスを逆順に読む。
+    const [chairs] = await ctx.var.dbConn.query<
+      Array<
+        {
+          id: string;
+          name: string;
+          model: string;
+          latitude: number;
+          longitude: number;
+        } & RowDataPacket
+      >
+    >(
+      `SELECT chairs.id, chairs.name, chairs.model,
+              location.latitude, location.longitude
+       FROM chairs
+       JOIN chair_locations location ON location.id = (
+         SELECT id FROM chair_locations
+         WHERE chair_id = chairs.id
+         ORDER BY chair_id DESC, created_at DESC LIMIT 1
+       )
+       WHERE chairs.is_active = TRUE
+         AND ABS(location.latitude - ?) + ABS(location.longitude - ?) <= ?
+         AND NOT EXISTS (
+           SELECT 1 FROM rides
+           WHERE rides.chair_id = chairs.id
+             AND COALESCE((
+               SELECT status FROM ride_statuses
+               WHERE ride_id = rides.id
+               ORDER BY ride_id DESC, created_at DESC LIMIT 1
+             ), '') <> 'COMPLETED'
+         )`,
+      [lat, lon, distance],
     );
-    const nearbyChairs: Array<{
-      id: string;
-      name: string;
-      model: string;
-      current_coordinate: Coordinate;
-    }> = [];
-    for (const chair of chairs) {
-      if (!chair.is_active) continue;
-      const [rides] = await ctx.var.dbConn.query<Array<Ride & RowDataPacket>>(
-        "SELECT * FROM rides WHERE chair_id = ? ORDER BY created_at DESC",
-        [chair.id],
-      );
-      let skip = false;
-      for (const ride of rides) {
-        // 過去にライドが存在し、かつ、それが完了していない場合はスキップ
-        const status = await getLatestRideStatus(ctx.var.dbConn, ride.id);
-        if (status !== "COMPLETED") {
-          skip = true;
-          break;
-        }
-      }
-      if (skip) {
-        continue;
-      }
-
-      // 最新の位置情報を取得
-      const [[chairLocation]] = await ctx.var.dbConn.query<
-        Array<ChairLocation & RowDataPacket>
-      >(
-        "SELECT * FROM chair_locations WHERE chair_id = ? ORDER BY created_at DESC LIMIT 1",
-        [chair.id],
-      );
-
-      if (!chairLocation) {
-        continue;
-      }
-
-      if (
-        calculateDistance(
-          coordinate.latitude,
-          coordinate.longitude,
-          chairLocation.latitude,
-          chairLocation.longitude,
-        ) <= distance
-      ) {
-        nearbyChairs.push({
-          id: chair.id,
-          name: chair.name,
-          model: chair.model,
-          current_coordinate: {
-            latitude: chairLocation.latitude,
-            longitude: chairLocation.longitude,
-          },
-        });
-      }
-    }
+    const nearbyChairs = chairs.map((chair) => ({
+      id: chair.id,
+      name: chair.name,
+      model: chair.model,
+      current_coordinate: {
+        latitude: chair.latitude,
+        longitude: chair.longitude,
+      },
+    }));
 
     const [[{ "CURRENT_TIMESTAMP(6)": retrievedAt }]] =
       await ctx.var.dbConn.query<
