@@ -3,6 +3,7 @@
 
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -62,6 +63,16 @@ def main():
             result = line[line.index('msg=') + 4:].strip()
     returncode = process.wait()
     notify(result, returncode, logs)
+    if os.environ.get('DISCORD_WEBHOOK_URL'):
+        for report in ('alp:discord', 'slowquery:discord'):
+            try:
+                report_result = subprocess.run(
+                    ['task', report], cwd=Path(__file__).resolve().parent.parent,
+                )
+                if report_result.returncode:
+                    print(f'{report} に失敗しました。', file=sys.stderr)
+            except OSError:
+                print(f'{report} を実行できませんでした。', file=sys.stderr)
     return returncode if returncode else (0 if result and 'pass=true' in result else 1)
 
 
