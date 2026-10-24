@@ -215,6 +215,46 @@ describe("ETA matching with MySQL", { skip: !enabled }, () => {
     );
     assert.equal(await assigned(id), null);
   });
+  test("drains several queued rides in one matcher tick", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      await chair("fast", i);
+      ids.push(await ride(null, false, false, `2026-10-24 00:00:0${i + 1}`));
+    }
+    await match();
+    const selected = await Promise.all(ids.map(assigned));
+    assert.ok(selected.every((id) => id !== null));
+    assert.equal(new Set(selected).size, 3);
+    const [[events]] = await pool.query<RowDataPacket[]>(
+      "SELECT COUNT(*) n FROM notification_events",
+    );
+    assert.equal(events.n, 3);
+  });
+  test("bounds a large backlog and continues with the oldest rides on the next tick", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      await chair("fast", i);
+      ids.push(
+        await ride(
+          null,
+          false,
+          false,
+          `2026-10-24 00:00:${String(i + 1).padStart(2, "0")}`,
+        ),
+      );
+    }
+    await match();
+    const first = await Promise.all(ids.map(assigned));
+    const count = first.filter((id) => id !== null).length;
+    assert.ok(count > 1 && count <= 16, `unexpected batch size: ${count}`);
+    assert.ok(first.slice(0, count).every((id) => id !== null));
+    assert.ok(first.slice(count).every((id) => id === null));
+    for (let i = 0; i < 20 && (await assigned(ids[19])) === null; i++)
+      await match();
+    const selected = await Promise.all(ids.map(assigned));
+    assert.ok(selected.every((id) => id !== null));
+    assert.equal(new Set(selected).size, 20);
+  });
   test("concurrent matchers cannot double-assign a chair or duplicate history", async () => {
     const selected = await chair("fast", 0);
     await ride(null, false, false, "2026-10-24 00:00:01");
