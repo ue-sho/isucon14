@@ -27,7 +27,6 @@ tasks:
       - task: deploy-config
       - >-
         ssh s1 'sudo systemctl restart isuride-node.service'
-      - task: wait-ready
       - task: status
 
   deploy-config:
@@ -61,33 +60,7 @@ tasks:
     desc: s1 の Node アプリを再起動
     cmds:
       - ssh s1 'sudo systemctl restart isuride-node.service'
-      - task: wait-ready
       - task: status
-
-  wait-ready:
-    desc: s1 の Node アプリが HTTP 応答するまで待機
-    cmds:
-      - |
-        ssh s1 'bash -s' <<'BASH'
-        set -eu
-        for attempt in {1..30}; do
-          if ! systemctl is-active --quiet isuride-node.service; then
-            echo "Node アプリが稼働していません。task logs で確認してください。" >&2
-            exit 1
-          fi
-          # 認証なしの GET が 401 を返せば、DB接続とHTTP受付が完了している。
-          http_status=$(curl --disable --silent --output /dev/null \
-            --write-out "%{http_code}" --connect-timeout 1 --max-time 1 \
-            http://127.0.0.1:8080/api/app/notification) || http_status=000
-          if [ "$http_status" = 401 ]; then
-            echo "Node アプリの起動を確認しました（HTTP 401）。"
-            exit 0
-          fi
-          sleep 1
-        done
-        echo "Node アプリの起動を確認できませんでした（HTTP $http_status）。task logs で確認してください。" >&2
-        exit 1
-        BASH
 
   status:
     desc: s1 の Node アプリの稼働状態を表示
