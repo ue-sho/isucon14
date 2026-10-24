@@ -2,6 +2,8 @@
 /*
 !/.gitignore
 !/env.sh
+!/Taskfile.yml
+!/scripts/
 !/webapp/
 
 # Go・Node.jsの実装と共通ファイルを管理する。
