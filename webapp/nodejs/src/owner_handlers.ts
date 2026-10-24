@@ -120,14 +120,16 @@ FROM chairs
        LEFT JOIN (SELECT chair_id,
                           SUM(IFNULL(distance, 0)) AS total_distance,
                           MAX(created_at)          AS total_distance_updated_at
-                   FROM (SELECT chair_id,
-                                created_at,
-                                ABS(latitude - LAG(latitude) OVER (PARTITION BY chair_id ORDER BY created_at)) +
-                                ABS(longitude - LAG(longitude) OVER (PARTITION BY chair_id ORDER BY created_at)) AS distance
-                         FROM chair_locations) tmp
+                   FROM (SELECT cl.chair_id,
+                                cl.created_at,
+                                ABS(cl.latitude - LAG(cl.latitude) OVER (PARTITION BY cl.chair_id ORDER BY cl.created_at)) +
+                                ABS(cl.longitude - LAG(cl.longitude) OVER (PARTITION BY cl.chair_id ORDER BY cl.created_at)) AS distance
+                         FROM chair_locations cl
+                         JOIN chairs owner_chairs ON owner_chairs.id = cl.chair_id
+                         WHERE owner_chairs.owner_id = ?) tmp
                    GROUP BY chair_id) distance_table ON distance_table.chair_id = chairs.id
 WHERE owner_id = ?`,
-    [owner.id],
+    [owner.id, owner.id],
   );
 
   const chairResponse = chairs.map((chair) => {

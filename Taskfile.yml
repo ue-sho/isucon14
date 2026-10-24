@@ -75,4 +75,44 @@ tasks:
   bench:
     desc: bench サーバーから s1 にベンチマークを実行
     cmds:
+      - task: logs:rotate
       - python3 scripts/bench.py
+
+  logs:rotate:
+    desc: s1 の計測ログを日時付きで退避して再オープン
+    cmds:
+      - ssh s1 'bash -s' < '{{.TASKFILE_DIR}}/scripts/rotate-analysis-logs.sh'
+
+  setup:tools:
+    desc: s1 に alp と pt-query-digest をインストール
+    cmds:
+      - ssh s1 'bash -s' < '{{.TASKFILE_DIR}}/scripts/setup-analysis-tools.sh'
+
+  alp:
+    desc: nginx のリクエストを合計処理時間順で集計
+    cmds:
+      - >-
+        ssh s1 'sudo alp ltsv --file=/var/log/nginx/access.ltsv
+        --sort=sum --reverse
+        -m "/api/app/rides/[^/]+,/api/chair/rides/[^/]+,/api/owner/chairs/[^/]+"'
+
+  slowquery:
+    desc: MySQL のスロークエリログを集計
+    cmds:
+      - ssh s1 'sudo pt-query-digest --no-version-check /var/log/mysql/mysql-slow.log'
+
+  alp:discord:
+    desc: alp の集計結果を Discord に投稿
+    cmds:
+      - python3 scripts/report_discord.py alp
+
+  slowquery:discord:
+    desc: スロークエリの集計結果を Discord に投稿
+    cmds:
+      - python3 scripts/report_discord.py slowquery
+
+  metrics:discord:
+    desc: nginx・MySQL の集計結果を Discord に投稿
+    cmds:
+      - task: alp:discord
+      - task: slowquery:discord
