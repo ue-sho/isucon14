@@ -1,17 +1,50 @@
 version: '3'
 
+dotenv: ['.env.discord']
+
 tasks:
   default:
     desc: 利用できるタスクを表示
     cmds:
       - task --list
 
+  deploy:
+    desc: s1 でブランチを切り替え・pull し、Node アプリを再起動（BRANCH 指定可）
+    vars:
+      CURRENT_BRANCH:
+        sh: git -C {{.TASKFILE_DIR | shellQuote}} branch --show-current
+      DEPLOY_BRANCH: '{{.BRANCH | default .CURRENT_BRANCH}}'
+    requires:
+      vars: [DEPLOY_BRANCH]
+    cmds:
+      - >-
+        ssh s1
+        {{printf "cd /home/isucon || exit 1; if test -n \"$(git status --porcelain)\"; then echo 'サーバーに未コミットの変更があるため中止します' >&2; exit 1; fi; git fetch origin && git switch -- %s && git pull --ff-only origin %s" (.DEPLOY_BRANCH | shellQuote) (.DEPLOY_BRANCH | shellQuote) | shellQuote}}
+      - >-
+        ssh s1 'cd /home/isucon/webapp/nodejs
+        && /home/isucon/.x npm ci
+        && /home/isucon/.x npm exec -- tsc --noEmit'
+      - >-
+        ssh s1 'sudo systemctl restart isuride-node.service'
+      - task: status
+
+  restart:
+    desc: s1 の Node アプリを再起動
+    cmds:
+      - ssh s1 'sudo systemctl restart isuride-node.service'
+      - task: status
+
+  status:
+    desc: s1 の Node アプリの稼働状態を表示
+    cmds:
+      - ssh s1 'systemctl status isuride-node.service --no-pager --full'
+
+  logs:
+    desc: s1 の Node アプリのログを追跡（Ctrl+C で終了）
+    cmds:
+      - ssh s1 'sudo journalctl -u isuride-node.service -n 100 -f --no-pager'
+
   bench:
     desc: bench サーバーから s1 にベンチマークを実行
     cmds:
-      - >-
-        ssh bench 'cd /home/isucon && ./bench run
-        --addr 172.31.9.253:443
-        --target https://isuride.xiv.isucon.net
-        --payment-url http://172.31.5.235:12346
-        --payment-bind-port 12346'
+      - python3 scripts/bench.py
