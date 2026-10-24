@@ -502,7 +502,7 @@ type AppGetNotificationResponse = {
 export const appGetNotification = async (ctx: Context<Environment>) => {
   let response: AppGetNotificationResponse;
   const user = ctx.var.user;
-  ctx.var.dbConn.beginTransaction();
+  await ctx.var.dbConn.beginTransaction();
   try {
     const [[ride]] = await ctx.var.dbConn.query<Array<Ride & RowDataPacket>>(
       "SELECT * FROM rides WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
@@ -594,14 +594,35 @@ async function getChairStats(
     [chairId],
   );
 
+  if (rides.length === 0) {
+    return {
+      total_rides_count: 0,
+      total_evaluation_avg: 0,
+    };
+  }
+
+  const [allStatuses] = await dbConn.query<Array<RideStatus & RowDataPacket>>(
+    `SELECT rs.*
+     FROM ride_statuses AS rs
+     JOIN rides AS r ON r.id = rs.ride_id
+     WHERE r.chair_id = ?
+     ORDER BY rs.ride_id, rs.created_at`,
+    [chairId],
+  );
+  const statusesByRideId = new Map<string, RideStatus[]>();
+  for (const status of allStatuses) {
+    const statuses = statusesByRideId.get(status.ride_id);
+    if (statuses) {
+      statuses.push(status);
+    } else {
+      statusesByRideId.set(status.ride_id, [status]);
+    }
+  }
+
   let totalRidesCount = 0;
   let totalEvaluation = 0.0;
   for (const ride of rides) {
-    const [rideStatuses] = await dbConn.query<
-      Array<RideStatus & RowDataPacket>
-    >("SELECT * FROM ride_statuses WHERE ride_id = ? ORDER BY created_at", [
-      ride.id,
-    ]);
+    const rideStatuses = statusesByRideId.get(ride.id) ?? [];
     let arrivedAt: Date | undefined;
     let pickupedAt: Date | undefined;
     let isCompleted = false;
