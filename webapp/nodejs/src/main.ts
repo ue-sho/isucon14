@@ -1,5 +1,6 @@
+import { spawn } from "node:child_process";
 import { serve } from "@hono/node-server";
-import { Hono, type Context } from "hono";
+import { type Context, Hono } from "hono";
 import { createMiddleware } from "hono/factory";
 import {
   appGetNearbyChairs,
@@ -18,42 +19,59 @@ import {
   chairPostCoordinate,
   chairPostRideStatus,
 } from "./chair_handlers.js";
+import { pool } from "./db.js";
+import { internalGetMatching } from "./internal_handlers.js";
 import {
   appAuthMiddleware,
   chairAuthMiddleware,
   ownerAuthMiddleware,
 } from "./middlewares.js";
 import {
+  beginReset,
+  enterRequest,
+  failReset,
+  finishReset,
+  isInitializing,
+  isResetting,
+  leaveRequest,
+} from "./notification_lifecycle.js";
+import { takeNotificationTargets } from "./notification_repository.js";
+import { wakeNotifications } from "./notification_stream.js";
+import {
   ownerGetChairs,
   ownerGetSales,
   ownerPostOwners,
 } from "./owner_handlers.js";
 import type { Environment } from "./types/hono.js";
-import { execSync } from "node:child_process";
-import { internalGetMatching } from "./internal_handlers.js";
-import { createPool } from "mysql2/promise";
 // import { logger } from "hono/logger";
-
-const pool = createPool({
-  host: process.env.ISUCON_DB_HOST || "127.0.0.1",
-  port: Number(process.env.ISUCON_DB_PORT || "3306"),
-  user: process.env.ISUCON_DB_USER || "isucon",
-  password: process.env.ISUCON_DB_PASSWORD || "isucon",
-  database: process.env.ISUCON_DB_NAME || "isuride",
-  timezone: "+00:00",
-});
 
 const app = new Hono<Environment>();
 // app.use(logger());
 app.use(
   createMiddleware<Environment>(async (ctx, next) => {
-    const connection = await pool.getConnection();
-    ctx.set("dbConn", connection);
+    if (ctx.req.path === "/api/initialize") return next();
+    if (isInitializing()) return ctx.text("initializing", 503);
+    if (
+      ctx.req.path === "/api/app/notification" ||
+      ctx.req.path === "/api/chair/notification"
+    )
+      return next();
+    enterRequest();
     try {
-      await next();
+      const connection = await pool.getConnection();
+      ctx.set("dbConn", connection);
+      try {
+        await next();
+      } finally {
+        try {
+          await connection.rollback();
+        } finally {
+          wakeNotifications(takeNotificationTargets(connection));
+          connection.release();
+        }
+      }
     } finally {
-      await connection.rollback();
-      pool.releaseConnection(connection);
+      leaveRequest();
     }
   }),
 );
@@ -76,7 +94,7 @@ app.post(
   appAuthMiddleware,
   appPostRideEvaluatation,
 );
-app.get("/api/app/notification", appAuthMiddleware, appGetNotification);
+app.get("/api/app/notification", appGetNotification);
 app.get("/api/app/nearby-chairs", appAuthMiddleware, appGetNearbyChairs);
 
 // owner handlers
@@ -90,7 +108,7 @@ app.post("/api/chair/chairs", chairPostChairs);
 
 app.post("/api/chair/activity", chairAuthMiddleware, chairPostActivity);
 app.post("/api/chair/coordinate", chairAuthMiddleware, chairPostCoordinate);
-app.get("/api/chair/notification", chairAuthMiddleware, chairGetNotification);
+app.get("/api/chair/notification", chairGetNotification);
 app.post(
   "/api/chair/rides/:ride_id/status",
   chairAuthMiddleware,
@@ -100,7 +118,7 @@ app.post(
 // internal handlers
 app.get("/api/internal/matching", internalGetMatching);
 
-const port = 8080;
+const port = Number(process.env.PORT || 8080);
 serve(
   {
     fetch: app.fetch,
@@ -113,18 +131,58 @@ serve(
 
 async function postInitialize(ctx: Context<Environment>) {
   const body = await ctx.req.json<{ payment_server: string }>();
+  if (isResetting()) return ctx.text("initializing", 503);
   try {
-    execSync("../sql/init.sh", { stdio: "inherit" });
-  } catch (error) {
-    return ctx.text(`Failed to initialize\n${error}`, 500);
-  }
-  try {
-    await ctx.var.dbConn.query(
+    await beginReset();
+    await runInitializationScript();
+    await pool.query(
       "UPDATE settings SET value = ? WHERE name = 'payment_gateway_url'",
       [body.payment_server],
     );
+    await pool.query(
+      "SELECT last_seq, written_seq FROM notification_streams LIMIT 1",
+    );
+    finishReset();
+    return ctx.json({ language: "node" });
   } catch (error) {
-    return ctx.text(`Internal Server Error\n${error}`, 500);
+    failReset();
+    return ctx.text(`Failed to initialize\n${error}`, 500);
   }
-  return ctx.json({ language: "node" });
+}
+
+// Stop mysql/gzip children too, so a timed-out reset cannot race its retry.
+function runInitializationScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("bash", ["../sql/init.sh"], {
+      stdio: "inherit",
+      detached: true,
+    });
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch (error) {
+          console.error("failed to stop initialization", error);
+        }
+      }
+    }, 25000);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      if (!timedOut && code === 0) resolve();
+      else
+        reject(
+          new Error(
+            timedOut
+              ? "initialization timed out"
+              : `init.sh exited with ${code}`,
+          ),
+        );
+    });
+  });
 }

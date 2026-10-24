@@ -1,35 +1,31 @@
-import { ulid } from "ulid";
 import type { Context } from "hono";
+import { setCookie } from "hono/cookie";
+import type { ResultSetHeader, RowDataPacket } from "mysql2/promise";
+import { ulid } from "ulid";
+import {
+  ErroredUpstream,
+  calculateDistance,
+  calculateFare,
+  getLatestRideStatus,
+} from "./common.js";
+import { calculateDiscountedFare } from "./notification_payload.js";
+import { insertRideStatus } from "./notification_repository.js";
+import { notificationResponse } from "./notification_stream.js";
+import { requestPaymentGatewayPostPayment } from "./payment_gateway.js";
 import type { Environment } from "./types/hono.js";
-import { secureRandomStr } from "./utils/random.js";
 import type {
-  ResultSetHeader,
-  RowDataPacket,
-  Connection,
-} from "mysql2/promise";
-import type {
-  PaymentToken,
   Chair,
+  ChairLocation,
   Coordinate,
   Coupon,
   Owner,
+  PaymentToken,
   Ride,
-  RideStatus,
   User,
-  ChairLocation,
 } from "./types/models.js";
-import { setCookie } from "hono/cookie";
-import {
-  calculateDistance,
-  calculateFare,
-  ErroredUpstream,
-  FARE_PER_DISTANCE,
-  getLatestRideStatus,
-  INITIAL_FARE,
-} from "./common.js";
 import type { CountResult } from "./types/util.js";
-import { requestPaymentGatewayPostPayment } from "./payment_gateway.js";
 import { atoi } from "./utils/integer.js";
+import { secureRandomStr } from "./utils/random.js";
 
 type AppPostUserRequest = Readonly<{
   username: string;
@@ -264,10 +260,7 @@ export const appPostRides = async (ctx: Context<Environment>) => {
         reqJson.destination_coordinate.longitude,
       ],
     );
-    await ctx.var.dbConn.query(
-      "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)",
-      [ulid(), rideId, "MATCHING"],
-    );
+    await insertRideStatus(ctx.var.dbConn, rideId, "MATCHING");
     const [[{ "COUNT(*)": rideCount }]] = await ctx.var.dbConn.query<
       Array<CountResult & RowDataPacket>
     >("SELECT COUNT(*) FROM rides WHERE user_id = ?", [user.id]);
@@ -395,7 +388,7 @@ export const appPostRideEvaluatation = async (ctx: Context<Environment>) => {
   await ctx.var.dbConn.beginTransaction();
   try {
     let [[ride]] = await ctx.var.dbConn.query<Array<Ride & RowDataPacket>>(
-      "SELECT * FROM rides WHERE id = ?",
+      "SELECT * FROM rides WHERE id = ? FOR UPDATE",
       rideId,
     );
     if (!ride) {
@@ -414,10 +407,7 @@ export const appPostRideEvaluatation = async (ctx: Context<Environment>) => {
       return ctx.text("ride not found", 404);
     }
 
-    await ctx.var.dbConn.query(
-      "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)",
-      [ulid(), rideId, "COMPLETED"],
-    );
+    await insertRideStatus(ctx.var.dbConn, rideId, "COMPLETED");
 
     [[ride]] = await ctx.var.dbConn.query<Array<Ride & RowDataPacket>>(
       "SELECT * FROM rides WHERE id = ?",
@@ -475,183 +465,8 @@ export const appPostRideEvaluatation = async (ctx: Context<Environment>) => {
   }
 };
 
-type AppGetNotificationResponseData = {
-  ride_id: string;
-  pickup_coordinate: Coordinate;
-  destination_coordinate: Coordinate;
-  fare: number;
-  status: string;
-  chair?: {
-    id: string;
-    name: string;
-    model: string;
-    stats: {
-      total_rides_count: number;
-      total_evaluation_avg: number;
-    };
-  };
-  created_at: number;
-  updated_at: number;
-};
-
-type AppGetNotificationResponse = {
-  data: AppGetNotificationResponseData;
-  retry_after_ms?: number;
-};
-
-export const appGetNotification = async (ctx: Context<Environment>) => {
-  let response: AppGetNotificationResponse;
-  const user = ctx.var.user;
-  await ctx.var.dbConn.beginTransaction();
-  try {
-    const [[ride]] = await ctx.var.dbConn.query<Array<Ride & RowDataPacket>>(
-      "SELECT * FROM rides WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
-      [user.id],
-    );
-    if (!ride) {
-      return ctx.json({ retry_after_ms: 30 }, 200);
-    }
-    const [[yetSentRideStatus]] = await ctx.var.dbConn.query<
-      Array<RideStatus & RowDataPacket>
-    >(
-      "SELECT * FROM ride_statuses WHERE ride_id = ? AND app_sent_at IS NULL ORDER BY created_at ASC LIMIT 1",
-      [ride.id],
-    );
-    const status = yetSentRideStatus
-      ? yetSentRideStatus.status
-      : await getLatestRideStatus(ctx.var.dbConn, ride.id);
-
-    const fare = await calculateDiscountedFare(
-      ctx.var.dbConn,
-      user.id,
-      ride,
-      ride.pickup_latitude,
-      ride.pickup_longitude,
-      ride.destination_latitude,
-      ride.destination_longitude,
-    );
-
-    response = {
-      data: {
-        ride_id: ride.id,
-        pickup_coordinate: {
-          latitude: ride.pickup_latitude,
-          longitude: ride.pickup_longitude,
-        },
-        destination_coordinate: {
-          latitude: ride.destination_latitude,
-          longitude: ride.destination_longitude,
-        },
-        fare,
-        status,
-        created_at: ride.created_at.getTime(),
-        updated_at: ride.updated_at.getTime(),
-      },
-      retry_after_ms: 30,
-    };
-    if (ride.chair_id !== null) {
-      const [[chair]] = await ctx.var.dbConn.query<
-        Array<Chair & RowDataPacket>
-      >("SELECT * FROM chairs WHERE id = ?", [ride.chair_id]);
-      const stats = await getChairStats(ctx.var.dbConn, chair.id);
-      response.data.chair = {
-        id: chair.id,
-        name: chair.name,
-        model: chair.model,
-        stats: {
-          total_rides_count: stats.total_rides_count,
-          total_evaluation_avg: stats.total_evaluation_avg,
-        },
-      };
-    }
-
-    if (yetSentRideStatus?.id) {
-      await ctx.var.dbConn.query(
-        "UPDATE ride_statuses SET app_sent_at = CURRENT_TIMESTAMP(6) WHERE id = ?",
-        [yetSentRideStatus.id],
-      );
-    }
-
-    await ctx.var.dbConn.commit();
-    return ctx.json(response, 200);
-  } catch (e) {
-    await ctx.var.dbConn.rollback();
-    return ctx.text(`${e}`, 500);
-  }
-};
-
-type AppGetNotificationResponseChairStats = {
-  total_rides_count: number;
-  total_evaluation_avg: number;
-};
-
-async function getChairStats(
-  dbConn: Connection,
-  chairId: string,
-): Promise<AppGetNotificationResponseChairStats> {
-  const [rides] = await dbConn.query<Array<Ride & RowDataPacket>>(
-    "SELECT * FROM rides WHERE chair_id = ? ORDER BY updated_at DESC",
-    [chairId],
-  );
-
-  if (rides.length === 0) {
-    return {
-      total_rides_count: 0,
-      total_evaluation_avg: 0,
-    };
-  }
-
-  const [allStatuses] = await dbConn.query<Array<RideStatus & RowDataPacket>>(
-    `SELECT rs.*
-     FROM ride_statuses AS rs
-     JOIN rides AS r ON r.id = rs.ride_id
-     WHERE r.chair_id = ?
-     ORDER BY rs.ride_id, rs.created_at`,
-    [chairId],
-  );
-  const statusesByRideId = new Map<string, RideStatus[]>();
-  for (const status of allStatuses) {
-    const statuses = statusesByRideId.get(status.ride_id);
-    if (statuses) {
-      statuses.push(status);
-    } else {
-      statusesByRideId.set(status.ride_id, [status]);
-    }
-  }
-
-  let totalRidesCount = 0;
-  let totalEvaluation = 0.0;
-  for (const ride of rides) {
-    const rideStatuses = statusesByRideId.get(ride.id) ?? [];
-    let arrivedAt: Date | undefined;
-    let pickupedAt: Date | undefined;
-    let isCompleted = false;
-    for (const status of rideStatuses) {
-      if (status.status === "ARRIVED") {
-        arrivedAt = status.created_at;
-      } else if (status.status === "CARRYING") {
-        pickupedAt = status.created_at;
-      }
-      if (status.status === "COMPLETED") {
-        isCompleted = true;
-      }
-      if (!arrivedAt || !pickupedAt) {
-        continue;
-      }
-      if (!isCompleted) {
-        continue;
-      }
-
-      totalRidesCount++;
-      totalEvaluation += ride.evaluation ?? 0;
-    }
-  }
-  return {
-    total_rides_count: totalRidesCount,
-    total_evaluation_avg:
-      totalRidesCount > 0 ? totalEvaluation / totalRidesCount : 0,
-  };
-}
+export const appGetNotification = (ctx: Context<Environment>) =>
+  notificationResponse(ctx, "app");
 
 export const appGetNearbyChairs = async (ctx: Context<Environment>) => {
   const latStr = ctx.req.query("latitude");
@@ -759,63 +574,3 @@ export const appGetNearbyChairs = async (ctx: Context<Environment>) => {
     return ctx.text(`${err}`, 500);
   }
 };
-
-async function calculateDiscountedFare(
-  dbConn: Connection,
-  userId: string,
-  ride: Ride | null,
-  _pickupLatitude: number,
-  _pickupLongitude: number,
-  _destinationLatitude: number,
-  _destinationLongitude: number,
-): Promise<number> {
-  let discount = 0;
-  let destinationLatitude = _destinationLatitude;
-  let destinationLongitude = _destinationLongitude;
-  let pickupLatitude = _pickupLatitude;
-  let pickupLongitude = _pickupLongitude;
-  if (ride) {
-    destinationLatitude = ride.destination_latitude;
-    destinationLongitude = ride.destination_longitude;
-    pickupLatitude = ride.pickup_latitude;
-    pickupLongitude = ride.pickup_longitude;
-
-    // すでにクーポンが紐づいているならそれの割引額を参照
-    const [[coupon]] = await dbConn.query<Array<Coupon & RowDataPacket>>(
-      "SELECT * FROM coupons WHERE used_by = ?",
-      ride.id,
-    );
-    if (coupon) {
-      discount = coupon.discount;
-    }
-  } else {
-    // 初回利用クーポンを最優先で使う
-    const [[coupon]] = await dbConn.query<Array<Coupon & RowDataPacket>>(
-      "SELECT * FROM coupons WHERE user_id = ? AND code = 'CP_NEW2024' AND used_by IS NULL",
-      [userId],
-    );
-    if (coupon) {
-      discount = coupon.discount;
-    } else {
-      // 無いなら他のクーポンを付与された順番に使う
-      const [[coupon]] = await dbConn.query<Array<Coupon & RowDataPacket>>(
-        "SELECT * FROM coupons WHERE user_id = ? AND used_by IS NULL ORDER BY created_at LIMIT 1",
-        [userId],
-      );
-      if (coupon) {
-        discount = coupon.discount;
-      }
-    }
-  }
-  const meteredFare =
-    FARE_PER_DISTANCE *
-    calculateDistance(
-      pickupLatitude,
-      pickupLongitude,
-      destinationLatitude,
-      destinationLongitude,
-    );
-  const discountedMeteredFare = Math.max(meteredFare - discount, 0);
-
-  return INITIAL_FARE + discountedMeteredFare;
-}
