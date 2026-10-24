@@ -12,6 +12,7 @@
 # The following values assume you have at least 32M ram
 
 [mysqld]
+skip-log-bin
 #
 # * Basic Settings
 #
