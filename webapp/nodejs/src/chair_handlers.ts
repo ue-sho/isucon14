@@ -120,21 +120,24 @@ export const chairGetNotification = async (ctx: Context<Environment>) => {
       [chair.id],
     );
     if (!ride) {
+      await ctx.var.dbConn.commit();
       return ctx.json({ retry_after_ms: 30 }, 200);
     }
 
     const [[yetSentRideStatus]] = await ctx.var.dbConn.query<
-      Array<RideStatus & RowDataPacket>
+      Array<Pick<RideStatus, "id" | "status"> & RowDataPacket>
     >(
-      "SELECT * FROM ride_statuses WHERE ride_id = ? AND chair_sent_at IS NULL ORDER BY created_at ASC LIMIT 1",
+      "SELECT id, status FROM ride_statuses WHERE ride_id = ? AND chair_sent_at IS NULL ORDER BY created_at ASC LIMIT 1",
       [ride.id],
     );
     const status = yetSentRideStatus
       ? yetSentRideStatus.status
       : await getLatestRideStatus(ctx.var.dbConn, ride.id);
 
-    const [[user]] = await ctx.var.dbConn.query<Array<User & RowDataPacket>>(
-      "SELECT * FROM users WHERE id = ? FOR SHARE",
+    const [[user]] = await ctx.var.dbConn.query<
+      Array<Pick<User, "id" | "firstname" | "lastname"> & RowDataPacket>
+    >(
+      "SELECT id, firstname, lastname FROM users WHERE id = ? FOR SHARE",
       [ride.user_id],
     );
 
