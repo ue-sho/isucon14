@@ -34,7 +34,7 @@ mysqlx-bind-address	= 127.0.0.1
 #
 # * Fine Tuning
 #
-key_buffer_size		= 256M
+key_buffer_size		= 16M
 # max_allowed_packet	= 64M
 # thread_stack		= 256K
 
@@ -81,17 +81,3 @@ log_output = FILE
 max_binlog_size   = 100M
 # binlog_do_db		= include_database_name
 # binlog_ignore_db	= include_database_name
-
-# private-isu-2026 PR #9 の競技向け設定。
-# doublewrite と同期 flush を無効化するため、クラッシュ時の耐久性は低下する。
-innodb_doublewrite = 0
-max_connections = 1000
-innodb_buffer_pool_size = 1G
-innodb_flush_log_at_trx_commit = 0
-innodb_flush_method = O_DIRECT
-innodb_file_per_table = ON
-innodb_log_buffer_size = 16M
-innodb_redo_log_capacity = 250M
-innodb_sort_buffer_size = 4M
-read_rnd_buffer_size = 2M
-innodb_log_writer_threads = OFF
