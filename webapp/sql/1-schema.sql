@@ -141,3 +141,24 @@ CREATE TABLE coupons
   INDEX idx_coupons_used_by (used_by)
 )
   COMMENT 'クーポンテーブル';
+
+DROP TABLE IF EXISTS notification_streams;
+CREATE TABLE notification_streams (
+  recipient_type ENUM('app', 'chair') NOT NULL,
+  recipient_id VARCHAR(26) NOT NULL,
+  last_seq BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  written_seq BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  PRIMARY KEY (recipient_type, recipient_id)
+);
+DROP TABLE IF EXISTS notification_events;
+CREATE TABLE notification_events (
+  recipient_type ENUM('app', 'chair') NOT NULL,
+  recipient_id VARCHAR(26) NOT NULL,
+  seq BIGINT UNSIGNED NOT NULL,
+  ride_id VARCHAR(26) NOT NULL,
+  ride_status_id VARCHAR(26) NOT NULL,
+  status ENUM('MATCHING', 'ENROUTE', 'PICKUP', 'CARRYING', 'ARRIVED', 'COMPLETED') NOT NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (recipient_type, recipient_id, seq),
+  UNIQUE KEY uq_notification_status (recipient_type, recipient_id, ride_status_id)
+);
