@@ -11,9 +11,11 @@ import {
 import { appGetNearbyChairs } from "../src/app_handlers.js";
 import type { Environment } from "../src/types/hono.js";
 
-// Opt in with a local MySQL socket. All tables live in a new, isolated database;
+// Opt in with a local MySQL socket or a nonstandard loopback port. All tables live in a new, isolated database;
 // this suite never initializes the application's database or starts its server.
 const socketPath = process.env.NEARBY_TEST_MYSQL_SOCKET;
+const testPort = process.env.NEARBY_TEST_MYSQL_PORT;
+const enabled = Boolean(socketPath || testPort);
 const database = `test_nearby_${randomUUID().replace(/-/g, "")}`;
 let conn: Connection;
 let sequence = 0;
@@ -94,11 +96,18 @@ async function search(params = "latitude=10&longitude=20") {
   }>;
 }
 
-describe("nearby chairs with real MySQL", { skip: !socketPath }, () => {
+describe("nearby chairs with real MySQL", { skip: !enabled }, () => {
   before(async () => {
+    if (!socketPath) {
+      const port = Number(testPort);
+      assert.ok(Number.isInteger(port) && port > 1024 && port <= 65535 && port !== 3306);
+    }
     conn = await createConnection({
-      socketPath,
+      ...(socketPath
+        ? { socketPath }
+        : { host: "127.0.0.1", port: Number(testPort) }),
       user: "root",
+      password: process.env.NEARBY_TEST_MYSQL_PASSWORD ?? "",
       timezone: "+00:00",
       multipleStatements: true,
     });

@@ -78,6 +78,9 @@ async function fixture() {
     VALUES (?, ?, 'Test chair', 'test', 1, ?)`,
     [chair, ulid(), chair],
   );
+  await pool.query("INSERT INTO chair_location_state (chair_id) VALUES (?)", [
+    chair,
+  ]);
   return { user, chair };
 }
 async function ride(
