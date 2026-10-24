@@ -5,6 +5,7 @@
 !/Taskfile.yml
 !/scripts/
 !/webapp/
+!/docs/
 
 # Go・Node.jsの実装と共通ファイルを管理する。
 /webapp/*
