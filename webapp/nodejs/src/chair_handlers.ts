@@ -3,15 +3,10 @@ import { setCookie } from "hono/cookie";
 import type { RowDataPacket } from "mysql2";
 import { ulid } from "ulid";
 import { getLatestRideStatus } from "./common.js";
+import { insertRideStatus } from "./notification_repository.js";
+import { notificationResponse } from "./notification_stream.js";
 import type { Environment } from "./types/hono.js";
-import type {
-  ChairLocation,
-  Coordinate,
-  Owner,
-  Ride,
-  RideStatus,
-  User,
-} from "./types/models.js";
+import type { ChairLocation, Coordinate, Owner, Ride } from "./types/models.js";
 import { secureRandomStr } from "./utils/random.js";
 
 export const chairPostChairs = async (ctx: Context<Environment>) => {
@@ -70,11 +65,8 @@ export const chairPostCoordinate = async (ctx: Context<Environment>) => {
       "INSERT INTO chair_locations (id, chair_id, latitude, longitude) VALUES (?, ?, ?, ?)",
       [chairLocationID, chair.id, reqJson.latitude, reqJson.longitude],
     );
-    const [[location]] = await ctx.var.dbConn.query<
-      Array<ChairLocation & RowDataPacket>
-    >("SELECT * FROM chair_locations WHERE id = ?", [chairLocationID]);
     const [[ride]] = await ctx.var.dbConn.query<Array<Ride & RowDataPacket>>(
-      "SELECT * FROM rides WHERE chair_id = ? ORDER BY updated_at DESC LIMIT 1",
+      "SELECT * FROM rides WHERE chair_id = ? ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
       [chair.id],
     );
     if (ride) {
@@ -85,23 +77,20 @@ export const chairPostCoordinate = async (ctx: Context<Environment>) => {
           reqJson.longitude === ride.pickup_longitude &&
           status === "ENROUTE"
         ) {
-          await ctx.var.dbConn.query(
-            "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)",
-            [ulid(), ride.id, "PICKUP"],
-          );
+          await insertRideStatus(ctx.var.dbConn, ride.id, "PICKUP");
         }
         if (
           reqJson.latitude === ride.destination_latitude &&
           reqJson.longitude === ride.destination_longitude &&
           status === "CARRYING"
         ) {
-          await ctx.var.dbConn.query(
-            "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)",
-            [ulid(), ride.id, "ARRIVED"],
-          );
+          await insertRideStatus(ctx.var.dbConn, ride.id, "ARRIVED");
         }
       }
     }
+    const [[location]] = await ctx.var.dbConn.query<
+      Array<ChairLocation & RowDataPacket>
+    >("SELECT * FROM chair_locations WHERE id = ?", [chairLocationID]);
     await ctx.var.dbConn.commit();
     return ctx.json({ recorded_at: location.created_at.getTime() }, 200);
   } catch (e) {
@@ -110,72 +99,8 @@ export const chairPostCoordinate = async (ctx: Context<Environment>) => {
   }
 };
 
-export const chairGetNotification = async (ctx: Context<Environment>) => {
-  const chair = ctx.var.chair;
-
-  await ctx.var.dbConn.beginTransaction();
-  try {
-    const [[ride]] = await ctx.var.dbConn.query<Array<Ride & RowDataPacket>>(
-      "SELECT * FROM rides WHERE chair_id = ? ORDER BY updated_at DESC LIMIT 1",
-      [chair.id],
-    );
-    if (!ride) {
-      await ctx.var.dbConn.commit();
-      return ctx.json({ retry_after_ms: 30 }, 200);
-    }
-
-    const [[yetSentRideStatus]] = await ctx.var.dbConn.query<
-      Array<Pick<RideStatus, "id" | "status"> & RowDataPacket>
-    >(
-      "SELECT id, status FROM ride_statuses WHERE ride_id = ? AND chair_sent_at IS NULL ORDER BY created_at ASC LIMIT 1",
-      [ride.id],
-    );
-    const status = yetSentRideStatus
-      ? yetSentRideStatus.status
-      : await getLatestRideStatus(ctx.var.dbConn, ride.id);
-
-    const [[user]] = await ctx.var.dbConn.query<
-      Array<Pick<User, "id" | "firstname" | "lastname"> & RowDataPacket>
-    >(
-      "SELECT id, firstname, lastname FROM users WHERE id = ? FOR SHARE",
-      [ride.user_id],
-    );
-
-    if (yetSentRideStatus?.id) {
-      await ctx.var.dbConn.query(
-        "UPDATE ride_statuses SET chair_sent_at = CURRENT_TIMESTAMP(6) WHERE id = ?",
-        [yetSentRideStatus.id],
-      );
-    }
-
-    await ctx.var.dbConn.commit();
-    return ctx.json(
-      {
-        data: {
-          ride_id: ride.id,
-          user: {
-            id: user.id,
-            name: `${user.firstname} ${user.lastname}`,
-          },
-          pickup_coordinate: {
-            latitude: ride.pickup_latitude,
-            longitude: ride.pickup_longitude,
-          },
-          destination_coordinate: {
-            latitude: ride.destination_latitude,
-            longitude: ride.destination_longitude,
-          },
-          status,
-        },
-        retry_after_ms: 30,
-      },
-      200,
-    );
-  } catch (e) {
-    await ctx.var.dbConn.rollback();
-    return ctx.text(`${e}`, 500);
-  }
-};
+export const chairGetNotification = (ctx: Context<Environment>) =>
+  notificationResponse(ctx, "chair");
 
 export const chairPostRideStatus = async (ctx: Context<Environment>) => {
   const rideID = ctx.req.param("ride_id");
@@ -196,10 +121,7 @@ export const chairPostRideStatus = async (ctx: Context<Environment>) => {
     switch (reqJson.status) {
       // Acknowledge the ride
       case "ENROUTE":
-        await ctx.var.dbConn.query(
-          "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)",
-          [ulid(), ride.id, "ENROUTE"],
-        );
+        await insertRideStatus(ctx.var.dbConn, ride.id, "ENROUTE");
         break;
       // After Picking up user
       case "CARRYING": {
@@ -207,10 +129,7 @@ export const chairPostRideStatus = async (ctx: Context<Environment>) => {
         if (status !== "PICKUP") {
           return ctx.text("chair has not arrived yet", 400);
         }
-        await ctx.var.dbConn.query(
-          "INSERT INTO ride_statuses (id, ride_id, status) VALUES (?, ?, ?)",
-          [ulid(), ride.id, "CARRYING"],
-        );
+        await insertRideStatus(ctx.var.dbConn, ride.id, "CARRYING");
         break;
       }
       default:
