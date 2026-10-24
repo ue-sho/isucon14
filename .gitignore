@@ -19,3 +19,11 @@ node_modules/
 *.log
 .env
 .env.*
+
+# MySQL・nginxの設定ファイルを管理する。
+!/common/
+/common/**
+!/common/**/
+!/common/etc/mysql/mysql.conf.d/mysqld.cnf
+!/common/etc/nginx/nginx.conf
+!/common/etc/nginx/sites-available/isuride.conf
