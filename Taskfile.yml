@@ -1,0 +1,17 @@
+version: '3'
+
+tasks:
+  default:
+    desc: 利用できるタスクを表示
+    cmds:
+      - task --list
+
+  bench:
+    desc: bench サーバーから s1 にベンチマークを実行
+    cmds:
+      - >-
+        ssh bench 'cd /home/isucon && ./bench run
+        --addr 172.31.9.253:443
+        --target https://isuride.xiv.isucon.net
+        --payment-url http://172.31.5.235:12346
+        --payment-bind-port 12346'
