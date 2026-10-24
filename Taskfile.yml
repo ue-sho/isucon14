@@ -94,6 +94,7 @@ tasks:
       - >-
         ssh s1 'sudo alp ltsv --file=/var/log/nginx/access.ltsv
         --sort=sum --reverse
+        --filters "!(Uri matches \"^/(assets|images)/\")"
         -m "/api/app/rides/[^/]+,/api/chair/rides/[^/]+,/api/owner/chairs/[^/]+"'
 
   slowquery:
