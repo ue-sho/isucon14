@@ -9,7 +9,7 @@ tasks:
       - task --list
 
   deploy:
-    desc: s1 でブランチを切り替え・pull し、Node アプリを再起動（BRANCH 指定可）
+    desc: s1 でブランチを切り替え・pull し、設定を反映して各サービスを再起動（BRANCH 指定可）
     vars:
       CURRENT_BRANCH:
         sh: git -C {{.TASKFILE_DIR | shellQuote}} branch --show-current
@@ -24,9 +24,37 @@ tasks:
         ssh s1 'cd /home/isucon/webapp/nodejs
         && /home/isucon/.x npm ci
         && /home/isucon/.x npm exec -- tsc --noEmit'
+      - task: deploy-config
       - >-
         ssh s1 'sudo systemctl restart isuride-node.service'
       - task: status
+
+  deploy-config:
+    desc: s1 の取得済み設定を配置・検査し、MySQL・nginxを再起動
+    cmds:
+      - |
+        ssh s1 '
+          set -eu
+          cd /home/isucon
+          # my.cnf の既存リンクを保つため、リンク先の実体へ配置する。
+          sudo -n install -o root -g root -m 0644 \
+            common/etc/mysql/my.cnf \
+            /etc/mysql/mysql.cnf
+          sudo -n install -o root -g root -m 0644 \
+            common/etc/mysql/mysql.conf.d/mysqld.cnf \
+            /etc/mysql/mysql.conf.d/mysqld.cnf
+          sudo -n install -o root -g root -m 0644 \
+            common/etc/nginx/nginx.conf \
+            /etc/nginx/nginx.conf
+          sudo -n install -o root -g root -m 0644 \
+            common/etc/nginx/sites-available/isuride.conf \
+            /etc/nginx/sites-available/isuride.conf
+          sudo -n mysqld --validate-config
+          sudo -n nginx -t
+          sudo -n systemctl restart mysql
+          sudo -n systemctl restart nginx
+          systemctl is-active mysql nginx
+        '
 
   restart:
     desc: s1 の Node アプリを再起動
