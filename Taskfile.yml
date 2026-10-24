@@ -81,3 +81,16 @@ tasks:
     desc: s1 に alp と pt-query-digest をインストール
     cmds:
       - ssh s1 'bash -s' < '{{.TASKFILE_DIR}}/scripts/setup-analysis-tools.sh'
+
+  alp:
+    desc: nginx のリクエストを合計処理時間順で集計
+    cmds:
+      - >-
+        ssh s1 'sudo alp json --file=/var/log/nginx/access.alp.json
+        --sort=sum --reverse
+        -m "/api/app/rides/[^/]+,/api/chair/rides/[^/]+,/api/owner/chairs/[^/]+"'
+
+  slowquery:
+    desc: MySQL のスロークエリログを集計
+    cmds:
+      - ssh s1 'sudo pt-query-digest --no-version-check /var/log/mysql/mysql-slow.log'
